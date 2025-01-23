@@ -4,7 +4,7 @@ Server::Server()
 	: m_ipAddress(""), m_port(-1), m_listener_socket(INVALID_SOCKET) {
 }
 
-void Server::init(std::string ipAddress, int port) {
+void Server::init(const std::string& ipAddress, int port) {
 	m_ipAddress = ipAddress;
 	m_port = port;
 	WSADATA wsaData;
@@ -68,175 +68,261 @@ void Server::run() {
 	}
 }
 
-void Server::authorizeClient(int acceptSocket) {
-	bool isAuthorized = false;
-	while (!isAuthorized) {
-		char buffer[200];
-		int byteCount = recv(acceptSocket, buffer, 200, 0);
-		if (byteCount > 0) {
-			std::string bufferString(buffer, byteCount);
-			req::SenderData data = req::SenderData::deserialize(bufferString);
-
-			if (data.needsRegistration) {
-				std::lock_guard<std::mutex> lock(m_mtx);
-				m_vec_users.emplace_back(data.login, data.password, data.name); // add user to db
-				sendStatus(acceptSocket, ServerResponse::REGISTRATION_SUCCESS);
-				m_vec_online_users.emplace_back(data.login, data.password, data.name, true, acceptSocket);
-				isAuthorized = true;
-			}
-			else {
-				std::lock_guard<std::mutex> lock(m_mtx);
-				auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&data](const User& user) {
-					return ((user.getLogin() == data.login) && (user.getPassword() == data.password));
-					});
-
-				if (it != m_vec_users.end()) {
-					sendStatus(acceptSocket, ServerResponse::AUTHORIZATION_SUCCESS);
-					it->setStatus(true); // means online
-					it->setSocketOnServer(acceptSocket);
-					m_vec_online_users.emplace_back(it->getLogin(), it->getPassword(),
-						it->getName(), it->getStatus(), it->getSocketOnServer());
-					isAuthorized = true;
-				}
-
-				else {
-					sendStatus(acceptSocket, ServerResponse::AUTHORIZATION_FAIL);
-				}
-			}
-		}
-		else {
-			std::cout << "receiving error"; //remove later
-		}
-	}
-}
-
-
-void Server::onReceiving(int acceptSocket) {
-	authorizeClient(acceptSocket);
-	char buffer[1500];
-	int byteCount;
-
+void Server::onReceiving(SOCKET acceptSocket) {
+	bool isReceivingNextPacketSize = true;
+	int bufferSize = 40;
 	while (true) {
-		byteCount = recv(acceptSocket, buffer, 200, 0);
-		if (byteCount > 0) {
-			std::string s(buffer, byteCount);
+		char* buffer = new char[bufferSize];
+		int byteCount = recv(acceptSocket, buffer, 40, 0);
 
-			if (s.substr(0, 13) == "GET_USER_INFO") {
-				auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&s](const User& user) {
-					return s.substr(14) == user.getLogin();
-					});
+		if (byteCount > 0 && isReceivingNextPacketSize) {
+			std::string bufferStr(buffer, byteCount);
+			auto pair = rcv::parseQuery(bufferStr);
+			bufferSize = std::stoi(pair.second);
+			isReceivingNextPacketSize = false;
+			continue;
+		}
 
-				if (it == m_vec_users.end()) {
-					sendStatus(acceptSocket, ServerResponse::USER_INFO_NOT_FOUND);
-					continue;
+		if (byteCount > 0 && !isReceivingNextPacketSize) {
+			std::string bufferStr(buffer, byteCount);
+			auto pair = rcv::parseQuery(bufferStr);
 
-				}
-				else {
-					req::Packet pack;
-					req::SenderData dat("");
-					dat.login = it->getLogin();
-					dat.name = it->getName();
-					dat.password = it->getPassword();
-					pack.sender = dat;
-					std::string s = "USER_INFO_FOUND" + pack.serialize();
-					send(acceptSocket, s.c_str(), s.length(), 0);
-					continue;
-				}
+			if (pair.first == Query::AUTHORIZATION) {
+				rcv::AuthorizationPacket packet = rcv::AuthorizationPacket::deserialize(pair.second);
+				authorizeUser(acceptSocket, packet);				
 			}
-
-			req::Packet packet = req::Packet::deserialize(s);
-
-			
-			if (packet.isNewChat) {
-				auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&packet](const User& user) {
-					return packet.receiver.login == user.getLogin();
-					});
-
-				if (it == m_vec_users.end()) {
-					sendStatus(acceptSocket, ServerResponse::CHAT_CREATE_FAIL);
-
-				}
-				else {
-					sendStatus(acceptSocket, ServerResponse::CHAT_CREATE_SUCCESS);
-				}
+			else if (pair.first == Query::REGISTRATION) {
+				rcv::RegistrationPacket packet = rcv::RegistrationPacket::deserialize(pair.second);
+				registerUser(acceptSocket, packet);
 			}
-			else {
-				auto it = std::find_if(m_vec_online_users.begin(), m_vec_online_users.end(), [&packet](const User& user) {
-					return packet.receiver.login == user.getLogin();
-					});
-				if (it == m_vec_online_users.end()) {
-
-					auto it = m_map_messages_to_send.find(packet.receiver.login);
-					if (it == m_map_messages_to_send.end()) {
-						std::vector<std::string> messagesVec;
-						messagesVec.emplace_back(packet.msg);
-						m_map_messages_to_send[packet.receiver.login] = messagesVec;
-					}
-					else {
-						std::vector<std::string>& messagesVec = m_map_messages_to_send[packet.receiver.login];
-						messagesVec.emplace_back(packet.msg);
-					}
-				}
-				else {
-					sendPacket(acceptSocket, packet);
-				}
+			else if (pair.first == Query::CREATE_CHAT) {
+				rcv::CreateChatPacket packet = rcv::CreateChatPacket::deserialize(pair.second);
+				createChat(acceptSocket, packet);
+			}
+			else if (pair.first == Query::GET_USER_INFO) {
+				rcv::GetUserInfoPacket packet = rcv::GetUserInfoPacket::deserialize(pair.second);
+				findUserInfo(acceptSocket, packet); 
+			}
+			else if (pair.first == Query::UPDATE_USER_INFO) {
+				rcv::UpdateUserInfoPacket packet = rcv::UpdateUserInfoPacket::deserialize(pair.second);
+				updateUserInfo(acceptSocket, packet);
+			}
+			else if (pair.first == Query::MESSAGE) {
+				rpl::Message message = rpl::Message::deserialize(pair.second);
+				sendMessage(acceptSocket, message);
 			}
 		}
 
 		else if (byteCount == 0) {
 			printf("Connection closed by peer.\n");
-			break;
+
+			m_vec_online_users.erase(
+				std::remove_if(m_vec_online_users.begin(), m_vec_online_users.end(),
+					[acceptSocket](const User& user) {
+						return user.getSocketOnServer() == acceptSocket;
+					}),
+				m_vec_online_users.end());
+
+			auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(),
+				[acceptSocket](const User& user) {
+					return user.getSocketOnServer() == acceptSocket;
+				});
+
+
+			it->setIsOnline(false);
+			it->setLastSeenToNow();
+		}
+
+	}
+}
+
+void Server::updateUserInfo(SOCKET acceptSocket, rcv::UpdateUserInfoPacket& packet) {
+	std::lock_guard<std::mutex> lock(m_mtx);
+	auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&packet](User& user) {
+		return user.getLogin() == packet.getLogin();
+		});
+
+	if (it != m_vec_users.end()) {
+		it->setLogin(packet.getLogin());
+		it->setName(packet.getName());
+		it->setPassword(packet.getPassword());
+		it->setPhoto(packet.getPhoto());
+
+		auto it_online = std::find_if(m_vec_online_users.begin(), m_vec_online_users.end(), [&packet](User& user) {
+			return user.getLogin() == packet.getLogin();
+			});
+
+		if (it_online != m_vec_users.end()) {
+			it_online->setLogin(packet.getLogin());
+			it_online->setName(packet.getName());
+			it_online->setPassword(packet.getPassword());
+			it_online->setPhoto(packet.getPhoto());
+			snd::StatusPacket pack;
+			pack.setStatus(Responce::USER_INFO_UPDATED);
+			sendPacket(acceptSocket, pack);
 		}
 		else {
-			int error = WSAGetLastError();
-			if (error == WSAECONNRESET) {
-				printf("Ñlient side connection shutdown. %d\n", error);
-				break;
-			}
-			else {
-				fprintf(stderr, "recv failed: %d\n", error);
-				break;
-			}
+			std::cout << "somehow user not in online vec";
 		}
-	}
-	closesocket(acceptSocket);
-	printf("Connection handler exited for socket: %d\n", (int)acceptSocket);
-}
 
 
-void Server::sendBool(SOCKET acceptSocket, bool value) {
-	const char* resp = value ? "true" : "false";
-	send(acceptSocket, resp, strlen(resp), 0);
-}
-
-void Server::sendPacket(SOCKET acceptSocket, req::Packet packet) {
-	std::string s = packet.serialize();
-	send(acceptSocket, s.c_str(), strlen(s.c_str()), 0);
-}
-
-void Server::sendStatus(SOCKET acceptSocket, ServerResponse response) {
-	const char* responseStr = nullptr;
-
-	if (response == ServerResponse::AUTHORIZATION_SUCCESS) {
-		responseStr = "AUTHORIZATION_SUCCESS";
-	}
-	else if (response == ServerResponse::REGISTRATION_SUCCESS) {
-		responseStr = "REGISTRATION_SUCCESS";
-	}
-	else if (response == ServerResponse::AUTHORIZATION_FAIL) {
-		responseStr = "AUTHORIZATION_FAIL";
-	}
-	else if (response == ServerResponse::REGISTRATION_FAIL) {
-		responseStr = "REGISTRATION_FAIL";
-	}
-	else if (response == ServerResponse::CHAT_CREATE_SUCCESS) {
-		responseStr = "CHAT_CREATE_SUCCESS";
-	}
-	else if (response == ServerResponse::CHAT_CREATE_FAIL) {
-		responseStr = "CHAT_CREATE_FAIL";
 	}
 	else {
-		responseStr = "";
+		snd::StatusPacket pack;
+		pack.setStatus(Responce::USER_INFO_NOT_UPDATED);
+		sendPacket(acceptSocket, pack);
 	}
-	send(acceptSocket, responseStr, strlen(responseStr), 0);
+}
+
+void Server::findUserInfo(SOCKET acceptSocket, rcv::GetUserInfoPacket& packet) {
+	std::lock_guard<std::mutex> lock(m_mtx);
+	auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&packet](User& user) {
+		return user.getLogin() == packet.getLogin();
+		});
+
+	if (it != m_vec_users.end()) {
+		snd::UserInfoPacket pack;
+		pack.setLogin(it->getLogin());
+		pack.setName(it->getName());
+		pack.setIsHasPhoto(it->getIsHasPhoto());
+		pack.setIsOnline(it->getIsOnline());
+		pack.setLastSeen(it->getLastSeen());
+		pack.setPhoto(it->getPhoto());
+		sendPacket(acceptSocket, pack);
+
+
+	}
+	else {
+		snd::StatusPacket pack;
+		pack.setStatus(Responce::USER_INFO_NOT_FOUND);
+		sendPacket(acceptSocket, pack);
+	}
+}
+
+void Server::createChat(SOCKET acceptSocket, rcv::CreateChatPacket& packet) {
+	if (packet.getSenderLogin() == packet.getReceiverLogin()) {
+		snd::StatusPacket pack;
+		pack.setStatus(Responce::CHAT_CREATE_FAIL);
+		sendPacket(acceptSocket, pack);
+		return;
+	}
+
+	std::lock_guard<std::mutex> lock(m_mtx);
+	auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&packet](User& user) {
+		return packet.getReceiverLogin() == user.getLogin();
+		});
+
+	if (it == m_vec_users.end()) {
+		snd::StatusPacket pack;
+		pack.setStatus(Responce::CHAT_CREATE_FAIL);
+		sendPacket(acceptSocket, pack);
+
+	}
+	else {
+		snd::StatusPacket pack;
+		pack.setStatus(Responce::CHAT_CREATE_SUCCESS);
+		sendPacket(acceptSocket, pack);
+	}
+}
+
+void Server::registerUser(SOCKET acceptSocket, rcv::RegistrationPacket& packet) {
+	std::lock_guard<std::mutex> lock(m_mtx);
+	auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&packet](User& user) {
+		return user.getLogin() == packet.getLogin();
+		});
+
+	if (it == m_vec_users.end()) {
+		User user(it->getLogin(), it->getPassword(), it->getName(), it->getSocketOnServer());
+		user.setSocketOnServer(acceptSocket);
+		user.setIsOnline(true);
+		user.setLastSeen("online");
+
+		m_vec_users.push_back(user); // add user to db
+		m_vec_online_users.push_back(user);
+		snd::StatusPacket pack;
+		pack.setStatus(Responce::REGISTRATION_SUCCESS);
+		sendPacket(acceptSocket, pack);
+	}
+	else{
+		snd::StatusPacket pack;
+		pack.setStatus(Responce::REGISTRATION_FAIL);
+		sendPacket(acceptSocket, pack);
+	}
+}
+
+void Server::authorizeUser(SOCKET acceptSocket, rcv::AuthorizationPacket& packet) {
+	std::lock_guard<std::mutex> lock(m_mtx);
+
+	auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&packet](User& user) {
+		return ((user.getLogin() == packet.getLogin()) && (user.getPassword() == packet.getPassword()));
+		});
+
+	if (it != m_vec_users.end()) {
+		User user(it->getLogin(), it->getPassword(), it->getName(), it->getSocketOnServer());
+		user.setSocketOnServer(acceptSocket);
+		user.setIsOnline(true);
+		user.setLastSeen("online");
+		m_vec_online_users.push_back(user);
+
+		snd::StatusPacket statusPacket;
+		statusPacket.setStatus(Responce::AUTHORIZATION_SUCCESS);
+		sendPacket(acceptSocket, statusPacket);
+		it->setIsOnline(true); 
+		it->setLastSeen("online");
+		it->setSocketOnServer(acceptSocket);
+
+		std::vector<rpl::Message> messages_vec = m_map_messages_to_send[packet.getLogin()];
+		if (!messages_vec.empty()) {
+			for (auto msg : messages_vec) {
+				sendMessage(acceptSocket, msg);
+			}
+		}
+		else {
+			m_map_messages_to_send.erase(packet.getLogin());
+		}
+	}
+
+	else {
+		snd::StatusPacket statusPacket;
+		statusPacket.setStatus(Responce::AUTHORIZATION_FAIL);
+		sendPacket(acceptSocket, statusPacket);
+	}
+}
+
+void Server::sendPacket(SOCKET acceptSocket, Packet& packet) {
+	std::string serializedPacket =  packet.serialize();
+	SizePacket sizePacket;
+	sizePacket.setData(serializedPacket);
+	std::string serializedSizePacket = sizePacket.serialize();
+	send(acceptSocket, serializedSizePacket.c_str(), strlen(serializedSizePacket.c_str()), 0);
+	send(acceptSocket, serializedPacket.c_str(), strlen(serializedPacket.c_str()), 0);
+}
+
+void Server::sendMessage(SOCKET acceptSocket, rpl::Message& message) {
+
+	auto it = std::find_if(m_vec_online_users.begin(), m_vec_online_users.end(), [&message](User& user) {
+		return user.getLogin() == message.getReceiverLogin();
+		});
+
+	if (it != m_vec_users.end()) {
+		std::string serializedMessage = message.serialize();
+		SizePacket sizePacket;
+		sizePacket.setData(serializedMessage);
+		std::string serializedSizePacket = sizePacket.serialize();
+		send(acceptSocket, serializedSizePacket.c_str(), strlen(serializedSizePacket.c_str()), 0);
+		send(acceptSocket, serializedMessage.c_str(), strlen(serializedMessage.c_str()), 0);
+	}
+
+	else {
+		auto itMessagesMap = m_map_messages_to_send.find(message.getReceiverLogin());
+		if (itMessagesMap == m_map_messages_to_send.end()) {
+			std::vector<rpl::Message> messagesVec;
+			messagesVec.push_back(message);
+			m_map_messages_to_send[message.getReceiverLogin()] = messagesVec;
+		}
+		else {
+			std::vector<rpl::Message>& messagesVec = m_map_messages_to_send[message.getReceiverLogin()];
+			messagesVec.push_back(message);
+		}
+	}
 }

@@ -1,7 +1,9 @@
 #pragma once
+
 #include<iostream>
 #include<sstream>
 #include<thread>
+#include<fstream>
 #include<unordered_map>
 #include<string>
 #include<vector>
@@ -12,23 +14,23 @@
 #include"user.h" 
 #include"request.h" 
 
-
-enum class ServerResponse {
-    AUTHORIZATION_SUCCESS,
-    REGISTRATION_SUCCESS,
-    AUTHORIZATION_FAIL,
-    REGISTRATION_FAIL,
-    CHAT_CREATE_SUCCESS,
-    CHAT_CREATE_FAIL,
-    USER_INFO_FOUND,
-    USER_INFO_NOT_FOUND
-};
-
 class Server {
 public:
     Server();
-    void init(std::string ipAddress, int port);
+    void init(const std::string& ipAddress, int port);
     void run();
+
+
+private:
+    void sendPacket(SOCKET acceptSocket, Packet& packet);
+    void sendMessage(SOCKET acceptSocket, rpl::Message& message);
+
+    void onReceiving(SOCKET acceptSocket);
+    void authorizeUser(SOCKET acceptSocket, rcv::AuthorizationPacket& packet);
+    void registerUser(SOCKET acceptSocket, rcv::RegistrationPacket& packet);
+    void createChat(SOCKET acceptSocket, rcv::CreateChatPacket& packet);
+    void findUserInfo(SOCKET acceptSocket, rcv::GetUserInfoPacket& packet);
+    void updateUserInfo(SOCKET acceptSocket, rcv::UpdateUserInfoPacket& packet);
 
 
 private:
@@ -43,14 +45,5 @@ private:
     std::string				    m_ipAddress;
     int						    m_port;
 
-    std::unordered_map<std::string, std::vector<std::string>> m_map_messages_to_send;
-
-private:
-    void sendBool(SOCKET acceptSocket, bool value);
-    void sendStatus(SOCKET acceptSocket, ServerResponse response);
-    void sendPacket(SOCKET acceptSocket, req::Packet packet);
-
-
-    void authorizeClient(int acceptSocket);
-    void onReceiving(int acceptSocket);
+    std::unordered_map<std::string, std::vector<rpl::Message>> m_map_messages_to_send;
 };
