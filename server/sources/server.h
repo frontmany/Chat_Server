@@ -27,18 +27,19 @@ private:
 
     void onReceiving(SOCKET acceptSocket);
     void authorizeUser(SOCKET acceptSocket, rcv::AuthorizationPacket& packet);
+    void dispatchPreviousMessages(SOCKET acceptSocket, rcv::AuthorizationPacket& packet);
     void registerUser(SOCKET acceptSocket, rcv::RegistrationPacket& packet);
     void createChat(SOCKET acceptSocket, rcv::CreateChatPacket& packet);
     void findUserInfo(SOCKET acceptSocket, rcv::GetUserInfoPacket& packet);
     void updateUserInfo(SOCKET acceptSocket, rcv::UpdateUserInfoPacket& packet);
-
+    void findUsersStatuses(SOCKET acceptSocket, rcv::GetFriendsStatusesPacket& packet);
+    void sendStatusToFriends(std::vector<User>::iterator it_me, bool status);
 
 private:
     std::vector<std::thread>    m_vec_threads;
     std::vector<SOCKET>		    m_vec_sockets;
 
     std::vector<User>		    m_vec_users;
-    std::vector<User>		    m_vec_online_users;
 
     std::mutex                  m_mtx;
     SOCKET					    m_listener_socket;

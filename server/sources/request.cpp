@@ -28,6 +28,9 @@ std::pair<Query, std::string> rcv::parseQuery(const std::string& query) {
         else if (firstLine == "MESSAGE") {
             queryType = Query::MESSAGE;
         }
+        else if (firstLine == "GET_ALL_FRIENDS_STATES") {
+            queryType = Query::GET_ALL_FRIENDS_STATES;
+        }
         else {
             throw std::runtime_error("Unknown query type!");
         }
@@ -103,7 +106,6 @@ GetUserInfoPacket GetUserInfoPacket::deserialize(const std::string& str) {
     return pack;
 }
 
-
 UpdateUserInfoPacket UpdateUserInfoPacket::deserialize(const std::string& str) {
     std::istringstream iss(str);
     UpdateUserInfoPacket  pack;
@@ -119,25 +121,110 @@ UpdateUserInfoPacket UpdateUserInfoPacket::deserialize(const std::string& str) {
     return pack;
 }
 
+GetFriendsStatusesPacket GetFriendsStatusesPacket::deserialize(const std::string& str) {
+    std::istringstream iss(str);
+    GetFriendsStatusesPacket  pack;
+
+    std::string loginStr;
+    while (iss >> loginStr) {
+        pack.m_vec_friends_logins.push_back(loginStr);
+    }
+
+    return pack;
+}
+
 using namespace rpl;
 Message Message::deserialize(const std::string& str) {
     std::istringstream iss(str);
     Message  message;
-    std::getline(iss, message.m_sender_login);
-    std::getline(iss, message.m_receiver_login);
+    
+    std::string idStr;
+    std::getline(iss, idStr);
+    message.m_id = std::stoi(idStr);
+
     std::getline(iss, message.m_message);
+
+    std::ostringstream remainingStream1;
+    std::ostringstream remainingStream2;
+    std::string line;
+
+    bool fl = true;
+    while (std::getline(iss, line)) {
+        if (line != ":") {
+            if (fl) {
+                remainingStream1 << line;
+                remainingStream1 << "\n";
+            }
+            else {
+                remainingStream2 << line;
+                remainingStream2 << "\n";
+            }
+        }
+        else {
+            fl = false;
+        }
+
+    }
+    std::string remainingPart1 = remainingStream1.str();
+    UserInfoPacket packSender = UserInfoPacket::deserialize(remainingPart1);
+
+    std::string remainingPart2 = remainingStream2.str();
+    UserInfoPacket packReceiver = UserInfoPacket::deserialize(remainingPart2);
+
+    message.setReceiverInfo(packReceiver);
+    message.setSenderInfo(packSender);
+
     return message;
 }
 
 std::string Message::serialize() {
     std::ostringstream oss;
     oss << "MESSAGE" << "\n"
-        << m_sender_login << '\n'
-        << m_receiver_login << '\n'
-        << m_message;
+        << m_id << '\n'
+        << m_message << '\n'
+        << m_sender_info.serialize() << '\n'
+        << ":" << '\n'
+        << m_receiver_info.serialize();
     return oss.str();
 }
 
+std::string UserInfoPacket::serialize() {
+    std::ostringstream oss;
+    oss << "USER_INFO_FOUND" << "\n"
+        << m_user_login << '\n'
+        << m_user_name << '\n'
+        << m_last_seen << '\n';
+
+    std::string photo_serialized_str = m_user_photo.serialize();
+    oss << photo_serialized_str << '\n';
+
+    oss << (m_isOnline ? "true" : "false") << '\n'
+        << (m_isHasPhoto ? "true" : "false");
+
+    return oss.str();
+}
+
+UserInfoPacket UserInfoPacket::deserialize(const std::string& str) {
+    std::istringstream iss(str);
+    std::string line;
+    UserInfoPacket packet;
+
+    std::getline(iss, packet.m_user_login);
+    std::getline(iss, packet.m_user_name);
+    std::getline(iss, packet.m_last_seen);
+
+    std::string photo_serialized_str;
+    std::getline(iss, photo_serialized_str);
+    packet.m_user_photo = Photo::deserialize(photo_serialized_str);
+
+    std::getline(iss, line);
+    packet.m_isOnline = (line == "true");
+
+    std::getline(iss, line);
+    packet.m_isHasPhoto = (line == "true");
+
+    return packet;
+}
 
 
 using namespace snd;
@@ -159,9 +246,6 @@ std::string StatusPacket::serialize() {
     case Responce::REGISTRATION_FAIL:
         response = "REGISTRATION_FAIL";
         break;
-    case Responce::CHAT_CREATE_SUCCESS:
-        response = "CHAT_CREATE_SUCCESS";
-        break;
     case Responce::CHAT_CREATE_FAIL:
         response = "CHAT_CREATE_FAIL";
         break;
@@ -181,22 +265,6 @@ std::string StatusPacket::serialize() {
     return response;
 }
 
-std::string UserInfoPacket::serialize() {
-    std::ostringstream oss;
-    oss << "USER_INFO_FOUND" << "\n"
-        << m_user_login << '\n'
-        << m_user_name << '\n'
-        << m_last_seen << '\n';
-
-    std::string photo_serialized_str = m_user_photo.serialize();
-    oss << photo_serialized_str << '\n';
-
-    oss << (m_isOnline ? "true" : "false") << '\n'
-        << (m_isHasPhoto ? "true" : "false");
-
-    return oss.str();
-}
-
 
 std::string FriendStatePacket::serialize() {
     std::ostringstream oss;
@@ -204,5 +272,27 @@ std::string FriendStatePacket::serialize() {
         << m_friend_login << '\n'
         << m_last_seen << '\n';
     oss << (m_isOnline ? "true" : "false");
+    return oss.str();
+}
+
+std::string FriendsStatusesPacket::serialize() {
+    std::ostringstream oss;
+    oss << "ALL_FRIENDS_STATES" << "\n";
+    for (const auto& p :m_vec_statuses) {
+        oss << p.first << ":" << p.second << ","; 
+    }
+
+    std::string result = oss.str();
+    if (!result.empty()) {
+        result.pop_back(); 
+    }
+
+    return result;
+}
+
+std::string ChatSuccessPacket::serialize() {
+    std::ostringstream oss;
+    oss << "CHAT_CREATE_SUCCESS" << "\n";
+    oss << m_packet.serialize();
     return oss.str();
 }

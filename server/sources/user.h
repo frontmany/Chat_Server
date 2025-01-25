@@ -42,6 +42,8 @@ public:
     const std::string& getLastSeen() const { return m_lastSeen; }
     void setLastSeen(const std::string& lastSeen) { m_lastSeen = lastSeen; }
 
+    std::vector<std::string>& getUserFriendsVec() { return m_vec_user_friends_logins; }
+
     void setLastSeenToNow();
 
 private:
@@ -53,7 +55,7 @@ private:
     std::string			m_login;
     std::string			m_password;
     Photo			    m_photo;
-    std::vector<User*>  m_vec_user_friends;
+    std::vector<std::string>  m_vec_user_friends_logins;
     SOCKET				m_on_server_sock;
 };
 
