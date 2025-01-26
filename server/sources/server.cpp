@@ -84,7 +84,7 @@ void Server::onReceiving(SOCKET acceptSocket) {
 		}
 
 		if (byteCount > 0 && !isReceivingNextPacketSize) {
-			std::string bufferStr(buffer, byteCount);
+			std::string bufferStr(buffer, bufferSize);
 			auto pair = rcv::parseQuery(bufferStr);
 
 			if (pair.first == Query::AUTHORIZATION) {
@@ -116,21 +116,54 @@ void Server::onReceiving(SOCKET acceptSocket) {
 				findUsersStatuses(acceptSocket, packet);
 			}
 
-			else if (byteCount == 0) {
-				printf("Connection closed by peer.\n");
-				std::lock_guard<std::mutex> lock(m_mtx);
-
-				auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(),
-					[acceptSocket](const User& user) {
-						return user.getSocketOnServer() == acceptSocket;
-					});
-				it->setIsOnline(false);
-				it->setLastSeenToNow();
-				it->setSocketOnServer(-1);
-
-				sendStatusToFriends(it, false); //false means offline
-			}
+			isReceivingNextPacketSize = true;
+			delete buffer;
 		}
+
+		else if (byteCount == 0) {
+			printf("Connection closed by peer.\n");
+			std::lock_guard<std::mutex> lock(m_mtx);
+
+			auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(),
+				[acceptSocket](const User& user) {
+					return user.getSocketOnServer() == acceptSocket;
+				});
+			it->setIsOnline(false);
+			it->setLastSeenToNow();
+			it->setSocketOnServer(-1);
+
+			sendStatusToFriends(it, false); //false means offline
+			isReceivingNextPacketSize = true;
+			delete buffer;
+		}
+
+		else {
+			int error = WSAGetLastError();
+			std::lock_guard<std::mutex> lock(m_mtx);
+
+			auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(),
+				[acceptSocket](const User& user) {
+					return user.getSocketOnServer() == acceptSocket;
+				});
+			it->setIsOnline(false);
+			it->setLastSeenToNow();
+			it->setSocketOnServer(-1);
+
+			sendStatusToFriends(it, false); //false means offline
+			isReceivingNextPacketSize = true;
+			delete buffer;
+
+			if (error == WSAECONNRESET) {
+				printf("Client side connection shutdown.\n", error);
+				break;
+			}
+			else {
+				fprintf(stderr, "recv failed: %d\n", error);
+				break;
+			}
+
+		}
+
 
 	}
 }
@@ -243,7 +276,7 @@ void Server::registerUser(SOCKET acceptSocket, rcv::RegistrationPacket& packet) 
 		});
 
 	if (it == m_vec_users.end()) {
-		User user(it->getLogin(), it->getPassword(), it->getName(), it->getSocketOnServer());
+		User user(packet.getLogin(), packet.getPassword(), packet.getName(), acceptSocket);
 		user.setSocketOnServer(acceptSocket);
 		user.setIsOnline(true);
 		user.setLastSeen("online");
