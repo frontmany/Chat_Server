@@ -73,7 +73,7 @@ void Server::onReceiving(SOCKET acceptSocket) {
 	int bufferSize = 40;
 	while (true) {
 		char* buffer = new char[bufferSize];
-		int byteCount = recv(acceptSocket, buffer, 40, 0);
+		int byteCount = recv(acceptSocket, buffer, bufferSize, 0);
 
 		if (byteCount > 0 && isReceivingNextPacketSize) {
 			std::string bufferStr(buffer, byteCount);
@@ -117,23 +117,7 @@ void Server::onReceiving(SOCKET acceptSocket) {
 			}
 
 			isReceivingNextPacketSize = true;
-			delete buffer;
-		}
-
-		else if (byteCount == 0) {
-			printf("Connection closed by peer.\n");
-			std::lock_guard<std::mutex> lock(m_mtx);
-
-			auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(),
-				[acceptSocket](const User& user) {
-					return user.getSocketOnServer() == acceptSocket;
-				});
-			it->setIsOnline(false);
-			it->setLastSeenToNow();
-			it->setSocketOnServer(-1);
-
-			sendStatusToFriends(it, false); //false means offline
-			isReceivingNextPacketSize = true;
+			bufferSize = 40;
 			delete buffer;
 		}
 
@@ -141,27 +125,42 @@ void Server::onReceiving(SOCKET acceptSocket) {
 			int error = WSAGetLastError();
 			std::lock_guard<std::mutex> lock(m_mtx);
 
-			auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(),
+			auto it_me = std::find_if(m_vec_users.begin(), m_vec_users.end(),
 				[acceptSocket](const User& user) {
 					return user.getSocketOnServer() == acceptSocket;
 				});
-			it->setIsOnline(false);
-			it->setLastSeenToNow();
-			it->setSocketOnServer(-1);
+			it_me->setIsOnline(false);
+			it_me->setLastSeenToNow();
+			it_me->setSocketOnServer(-1);
 
-			sendStatusToFriends(it, false); //false means offline
 			isReceivingNextPacketSize = true;
 			delete buffer;
 
 			if (error == WSAECONNRESET) {
 				printf("Client side connection shutdown.\n", error);
+				sendStatusToFriends(it_me, false);
+				return;
+				/*snd::FriendStatePacket packet;
+				packet.setIsOnline(false);
+				packet.setLastSeen(it_me->getLastSeen());
+
+				for (auto friendLogin : it_me->getUserFriendsVec()) {
+					auto itFriend = std::find_if(m_vec_users.begin(), m_vec_users.end(),
+						[&friendLogin](const User& user) {
+							return user.getLogin() == friendLogin;
+						});
+					if (itFriend->getIsOnline()) {
+						sendPacket(itFriend->getSocketOnServer(), packet);
+					}
+				}
+
 				break;
 			}
 			else {
 				fprintf(stderr, "recv failed: %d\n", error);
 				break;
+			}*/
 			}
-
 		}
 
 
@@ -252,8 +251,15 @@ void Server::createChat(SOCKET acceptSocket, rcv::CreateChatPacket& packet) {
 		auto it_me = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&packet](User& user) {
 			return packet.getSenderLogin() == user.getLogin();
 			});
-		std::vector<std::string>& friendsVec = it_me->getUserFriendsVec();
-		friendsVec.push_back(packet.getReceiverLogin());
+
+		auto it_friend = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&packet](User& user) {
+			return packet.getReceiverLogin() == user.getLogin();
+			});
+
+		std::vector<std::string>& friendsVecSender = it_me->getUserFriendsVec();
+		std::vector<std::string>& friendsVecReceiver = it_friend->getUserFriendsVec();
+		friendsVecSender.push_back(packet.getReceiverLogin());
+		friendsVecReceiver.push_back(packet.getSenderLogin());
 
 		snd::ChatSuccessPacket pack;
 		rpl::UserInfoPacket userPack;
@@ -359,8 +365,8 @@ void Server::sendPacket(SOCKET acceptSocket, Packet& packet) {
 	SizePacket sizePacket;
 	sizePacket.setData(serializedPacket);
 	std::string serializedSizePacket = sizePacket.serialize();
-	send(acceptSocket, serializedSizePacket.c_str(), strlen(serializedSizePacket.c_str()), 0);
-	send(acceptSocket, serializedPacket.c_str(), strlen(serializedPacket.c_str()), 0);
+	send(acceptSocket, serializedSizePacket.c_str(), serializedSizePacket.size(), 0);
+	send(acceptSocket, serializedPacket.c_str(), serializedPacket.size(), 0);
 }
 
 void Server::sendMessage(SOCKET acceptSocket, rpl::Message& message) {

@@ -36,7 +36,7 @@ std::string Photo::serialize() {
         return oss.str();
     }
     else {
-        return "";
+        return "no photo";
     }
 
 }
@@ -50,12 +50,11 @@ Photo Photo::deserialize(const std::string& data) {
     WCHAR username[256];
     DWORD username_len = sizeof(username) / sizeof(WCHAR);
     if (!GetUserNameW(username, &username_len)) {
-        std::cerr << "No User data" << std::endl;
-        return Photo("");
+        std::cout << "No User data" << std::endl;
     }
 
     std::string usernameStr = wideStringToString(username);
-    std::string saveDirectory = "C:\\Users\\" + usernameStr + "\\Documents\\PhotoFiles";
+    std::string saveDirectory = "C:\\Users\\" + usernameStr + "\\Documents\\ReceivedFiles";
     std::string tempPath = saveDirectory + "\\restored_photo.jpg";
 
     if (size > 0) {
@@ -74,10 +73,9 @@ Photo Photo::deserialize(const std::string& data) {
         }
     }
     else {
-        std::cerr << "No Photo data" << std::endl;
+        std::cout << "No Photo data" << std::endl;
+        return Photo("");
     }
 
     return Photo(tempPath);
 }
-
-

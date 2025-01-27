@@ -209,6 +209,9 @@ UserInfoPacket UserInfoPacket::deserialize(const std::string& str) {
     std::string line;
     UserInfoPacket packet;
 
+    std::string lineType; // reads USER_INFO_FOUND
+    std::getline(iss, lineType);
+    std::getline(iss, packet.m_user_login);
     std::getline(iss, packet.m_user_login);
     std::getline(iss, packet.m_user_name);
     std::getline(iss, packet.m_last_seen);
