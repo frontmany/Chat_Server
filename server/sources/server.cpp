@@ -237,14 +237,15 @@ void Server::createChat(SOCKET acceptSocket, rcv::CreateChatPacket& packet) {
 	}
 
 	std::lock_guard<std::mutex> lock(m_mtx);
-	auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&packet](User& user) {
+	auto it_friend = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&packet](User& user) {
 		return packet.getReceiverLogin() == user.getLogin();
 		});
 
-	if (it == m_vec_users.end()) {
+	if (it_friend == m_vec_users.end()) {
 		snd::StatusPacket pack;
 		pack.setStatus(Responce::CHAT_CREATE_FAIL);
 		sendPacket(acceptSocket, pack);
+		return;
 
 	}
 	else {
@@ -252,26 +253,35 @@ void Server::createChat(SOCKET acceptSocket, rcv::CreateChatPacket& packet) {
 			return packet.getSenderLogin() == user.getLogin();
 			});
 
-		auto it_friend = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&packet](User& user) {
-			return packet.getReceiverLogin() == user.getLogin();
+		auto& my_friends_vec = it_me->getUserFriendsVec();
+		auto it_check_double = std::find_if(my_friends_vec.begin(), my_friends_vec.end(), [&packet](std::string& login) {
+			return packet.getReceiverLogin() == login;
 			});
 
-		std::vector<std::string>& friendsVecSender = it_me->getUserFriendsVec();
-		std::vector<std::string>& friendsVecReceiver = it_friend->getUserFriendsVec();
-		friendsVecSender.push_back(packet.getReceiverLogin());
-		friendsVecReceiver.push_back(packet.getSenderLogin());
+		if (it_check_double == my_friends_vec.end()) {
+			std::vector<std::string>& friendsVecSender = it_me->getUserFriendsVec();
+			std::vector<std::string>& friendsVecReceiver = it_friend->getUserFriendsVec();
+			friendsVecSender.push_back(packet.getReceiverLogin());
+			friendsVecReceiver.push_back(packet.getSenderLogin());
 
-		snd::ChatSuccessPacket pack;
-		rpl::UserInfoPacket userPack;
-		userPack.setIsHasPhoto(it->getIsHasPhoto());
-		userPack.setIsOnline(it->getIsOnline());
-		userPack.setLastSeen(it->getLastSeen());
-		userPack.setLogin(it->getLogin());
-		userPack.setName(it->getName());
-		userPack.setPhoto(it->getPhoto());
+			snd::ChatSuccessPacket pack;
+			rpl::UserInfoPacket userPack;
+			userPack.setIsHasPhoto(it_friend->getIsHasPhoto());
+			userPack.setIsOnline(it_friend->getIsOnline());
+			userPack.setLastSeen(it_friend->getLastSeen());
+			userPack.setLogin(it_friend->getLogin());
+			userPack.setName(it_friend->getName());
+			userPack.setPhoto(it_friend->getPhoto());
 
-		pack.setUserInfoPacket(userPack);
-		sendPacket(acceptSocket, pack);
+			pack.setUserInfoPacket(userPack);
+			sendPacket(acceptSocket, pack);
+		}
+		else {
+			snd::StatusPacket pack;
+			pack.setStatus(Responce::CHAT_CREATE_FAIL);
+			sendPacket(acceptSocket, pack);
+		}
+		
 	}
 }
 
