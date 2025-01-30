@@ -134,12 +134,46 @@ GetFriendsStatusesPacket GetFriendsStatusesPacket::deserialize(const std::string
 }
 
 using namespace rpl;
+std::string MessagesReadPacket::serialize() const {
+    std::ostringstream oss;
+    oss << "MESSAGES_READ_PACKET" << "\n"
+        << m_sender_login << '\n'
+        << m_receiver_login << '\n';
+
+    for (const auto& id : m_read_messages_id_vec) {
+        oss << id << ' ';
+    }
+    oss << '\n';
+
+    return oss.str();
+}
+
+MessagesReadPacket MessagesReadPacket::deserialize(const std::string& str) {
+    std::istringstream iss(str);
+    std::string line;
+    MessagesReadPacket packet;
+
+    std::getline(iss, packet.m_sender_login);
+    std::getline(iss, packet.m_receiver_login);
+
+    std::getline(iss, line);
+    std::istringstream lineStream(line);
+    double messageId;
+    while (lineStream >> messageId) {
+        packet.m_read_messages_id_vec.push_back(messageId);
+    }
+
+    return packet;
+}
+
 Message Message::deserialize(const std::string& str) {
     std::istringstream iss(str);
     Message  message;
     
     std::string idStr;
+    std::string timeStampStr;
     std::getline(iss, idStr);
+    std::getline(iss, timeStampStr);
     message.m_id = std::stoi(idStr);
 
     std::getline(iss, message.m_message);
@@ -181,6 +215,7 @@ std::string Message::serialize() {
     std::ostringstream oss;
     oss << "MESSAGE" << "\n"
         << m_id << '\n'
+        << m_timeStamp << '\n'
         << m_message << '\n'
         << m_sender_info.serialize() << '\n'
         << ":" << '\n'
@@ -211,7 +246,6 @@ UserInfoPacket UserInfoPacket::deserialize(const std::string& str) {
 
     std::string lineType; // reads USER_INFO_FOUND
     std::getline(iss, lineType);
-    std::getline(iss, packet.m_user_login);
     std::getline(iss, packet.m_user_login);
     std::getline(iss, packet.m_user_name);
     std::getline(iss, packet.m_last_seen);

@@ -24,6 +24,7 @@ private:
 };
 
 enum class Query {
+    MESSAGES_READ_PACKET,
     NEXT_QUERY_SIZE,
     AUTHORIZATION,
     REGISTRATION,
@@ -36,6 +37,26 @@ enum class Query {
 };
 
 namespace rpl {
+    class MessagesReadPacket {
+    public:
+        MessagesReadPacket() {}
+        static MessagesReadPacket deserialize(const std::string& str);
+        std::string serialize() const;
+
+        const std::string& getSenderLogin() const { return m_sender_login; }
+        void setSenderLogin(const std::string& login) { m_sender_login = login; }
+
+        const std::string& getReceiverLogin() const { return m_receiver_login; }
+        void setReceiverLogin(const std::string& login) { m_receiver_login = login; }
+
+        std::vector<double>& getReadMessagesVec() { return m_read_messages_id_vec; }
+
+    private:
+        std::vector<double> m_read_messages_id_vec;
+        std::string m_sender_login;
+        std::string m_receiver_login;
+    };
+
     class UserInfoPacket : public Packet {
     public:
         UserInfoPacket() : m_isHasPhoto(false), m_isOnline(false) {}
@@ -85,6 +106,9 @@ namespace rpl {
         const std::string& getMessage() const { return m_message; }
         void setMessage(std::string& message) { m_message = message; }
 
+        const std::string& getTimeStamp() const { return m_timeStamp; }
+        void setTimeStamp(const std::string& timeStamp) { m_timeStamp = timeStamp; }
+
         const int getId() const { return m_id; }
         void setId(const int id) { m_id = id; }
 
@@ -93,6 +117,7 @@ namespace rpl {
         rpl::UserInfoPacket m_receiver_info;
         rpl::UserInfoPacket m_sender_info;
         std::string m_message;
+        std::string m_timeStamp;
     };
 }
 
@@ -209,6 +234,7 @@ namespace rcv {
 
 
 enum class Responce {
+    MESSAGES_READ_PACKET,
     EMPTY_RESPONSE,
     AUTHORIZATION_SUCCESS,
     REGISTRATION_SUCCESS,

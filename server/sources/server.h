@@ -24,6 +24,7 @@ public:
 private:
     void sendPacket(SOCKET acceptSocket, Packet& packet);
     void sendMessage(SOCKET acceptSocket, rpl::Message& message);
+    void sendMessagesReadIds(SOCKET acceptSocket, rpl::MessagesReadPacket& messagesReadPacket);
 
     void onReceiving(SOCKET acceptSocket);
     void authorizeUser(SOCKET acceptSocket, rcv::AuthorizationPacket& packet);
@@ -47,4 +48,5 @@ private:
     int						    m_port;
 
     std::unordered_map<std::string, std::vector<rpl::Message>> m_map_messages_to_send;
+    std::unordered_map<std::string, std::vector<double>> m_map_read_messages_ids_to_send;
 };

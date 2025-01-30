@@ -115,6 +115,10 @@ void Server::onReceiving(SOCKET acceptSocket) {
 				rcv::GetFriendsStatusesPacket packet = rcv::GetFriendsStatusesPacket::deserialize(pair.second);
 				findUsersStatuses(acceptSocket, packet);
 			}
+			else if (pair.first == Query::MESSAGES_READ_PACKET) {
+				rpl::MessagesReadPacket packet = rpl::MessagesReadPacket::deserialize(pair.second);
+				sendMessagesReadIds(acceptSocket, packet);
+			}
 
 			isReceivingNextPacketSize = true;
 			bufferSize = 40;
@@ -164,6 +168,42 @@ void Server::onReceiving(SOCKET acceptSocket) {
 		}
 
 
+	}
+}
+
+void Server::sendMessagesReadIds(SOCKET acceptSocket, rpl::MessagesReadPacket& messagesReadPacket) {
+	auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&messagesReadPacket](User& user) {
+		return user.getLogin() == messagesReadPacket.getReceiverLogin();
+		});
+
+	if (it->getIsOnline()) {
+		//swap 
+		const std::string& s = messagesReadPacket.getReceiverLogin();
+		messagesReadPacket.setReceiverLogin(messagesReadPacket.getSenderLogin());
+		messagesReadPacket.setSenderLogin(s);
+
+		std::string serializedPacket = messagesReadPacket.serialize();
+		SizePacket sizePacket;
+		sizePacket.setData(serializedPacket);
+		std::string serializedSizePacket = sizePacket.serialize();
+		send(acceptSocket, serializedSizePacket.c_str(), strlen(serializedSizePacket.c_str()), 0);
+		send(acceptSocket, serializedPacket.c_str(), strlen(serializedPacket.c_str()), 0);
+	}
+
+	else {
+		auto itMessagesMap = m_map_read_messages_ids_to_send.find(messagesReadPacket.getReceiverLogin());
+		if (itMessagesMap == m_map_read_messages_ids_to_send.end()) {
+			m_map_read_messages_ids_to_send[messagesReadPacket.getReceiverLogin()] = messagesReadPacket.getReadMessagesVec();
+		}
+		
+		// shall newer happend
+		else {
+			std::vector<double>& messagesVec = m_map_read_messages_ids_to_send[messagesReadPacket.getReceiverLogin()];
+			std::vector<double>& msgVec = messagesReadPacket.getReadMessagesVec();
+			for (auto id : msgVec) {
+				messagesVec.push_back(id);
+			}
+		}
 	}
 }
 
@@ -385,7 +425,7 @@ void Server::sendMessage(SOCKET acceptSocket, rpl::Message& message) {
 		return user.getLogin() == message.getReceiverInfo().getLogin();
 		});
 
-	if (it != m_vec_users.end() && it->getIsOnline()) {
+	if (it->getIsOnline()) {
 		
 		std::string serializedMessage = message.serialize();
 		SizePacket sizePacket;

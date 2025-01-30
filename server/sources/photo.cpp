@@ -23,7 +23,7 @@ void Photo::updateSize() {
 
 
 std::string Photo::serialize() {
-    if (m_size > 0) {
+    if (m_photoPath != "") {
         std::ostringstream oss;
         oss.write(reinterpret_cast<const char*>(&m_size), sizeof(m_size));
         std::ifstream file(m_photoPath, std::ios::binary);
@@ -43,6 +43,10 @@ std::string Photo::serialize() {
 
 
 Photo Photo::deserialize(const std::string& data) {
+    if (data == "no photo") {
+        return Photo();
+    }
+
     std::istringstream iss(data);
     std::size_t size;
 
