@@ -31,6 +31,9 @@ std::pair<Query, std::string> rcv::parseQuery(const std::string& query) {
         else if (firstLine == "GET_ALL_FRIENDS_STATES") {
             queryType = Query::GET_ALL_FRIENDS_STATES;
         }
+        else if (firstLine == "MESSAGES_READ_PACKET") {
+            queryType = Query::MESSAGES_READ_PACKET;
+        }
         else {
             throw std::runtime_error("Unknown query type!");
         }
@@ -168,55 +171,66 @@ MessagesReadPacket MessagesReadPacket::deserialize(const std::string& str) {
 
 Message Message::deserialize(const std::string& str) {
     std::istringstream iss(str);
-    Message  message;
-    
-    std::string idStr;
-    std::string timeStampStr;
-    std::getline(iss, idStr);
-    std::getline(iss, timeStampStr);
-    message.m_id = std::stoi(idStr);
+    Message message;
+    std::string line;
 
-    std::getline(iss, message.m_message);
+    std::getline(iss, line);
+    double id = 0;
+    std::from_chars(line.data(), line.data() + line.size(), id);
+    message.m_id = id;
+
+    std::getline(iss, message.m_timeStamp);
+
+    std::string msg;
+    while (std::getline(iss, line)) {
+        if (line == "|MSG_END|") {
+            break;
+        }
+        msg += line + "\n";
+
+    }
+    message.m_message = msg;
 
     std::ostringstream remainingStream1;
     std::ostringstream remainingStream2;
-    std::string line;
 
     bool fl = true;
     while (std::getline(iss, line)) {
         if (line != ":") {
             if (fl) {
-                remainingStream1 << line;
-                remainingStream1 << "\n";
+                remainingStream1 << line << "\n";
             }
             else {
-                remainingStream2 << line;
-                remainingStream2 << "\n";
+                remainingStream2 << line << "\n";
             }
         }
         else {
             fl = false;
         }
-
     }
+
     std::string remainingPart1 = remainingStream1.str();
     UserInfoPacket packSender = UserInfoPacket::deserialize(remainingPart1);
 
     std::string remainingPart2 = remainingStream2.str();
     UserInfoPacket packReceiver = UserInfoPacket::deserialize(remainingPart2);
 
-    message.setReceiverInfo(packReceiver);
-    message.setSenderInfo(packSender);
+
+    //swap buffers
+    message.setReceiverInfo(packSender);
+    message.setSenderInfo(packReceiver);
 
     return message;
 }
 
 std::string Message::serialize() {
+
     std::ostringstream oss;
-    oss << "MESSAGE" << "\n"
-        << m_id << '\n'
+    oss << "MESSAGE" << "\n";
+    oss << m_id << '\n'
         << m_timeStamp << '\n'
         << m_message << '\n'
+        << "|MSG_END|" << '\n'
         << m_sender_info.serialize() << '\n'
         << ":" << '\n'
         << m_receiver_info.serialize();

@@ -178,7 +178,7 @@ void Server::sendMessagesReadIds(SOCKET acceptSocket, rpl::MessagesReadPacket& m
 
 	if (it->getIsOnline()) {
 		//swap 
-		const std::string& s = messagesReadPacket.getReceiverLogin();
+		const std::string s = messagesReadPacket.getReceiverLogin();
 		messagesReadPacket.setReceiverLogin(messagesReadPacket.getSenderLogin());
 		messagesReadPacket.setSenderLogin(s);
 
@@ -186,8 +186,8 @@ void Server::sendMessagesReadIds(SOCKET acceptSocket, rpl::MessagesReadPacket& m
 		SizePacket sizePacket;
 		sizePacket.setData(serializedPacket);
 		std::string serializedSizePacket = sizePacket.serialize();
-		send(acceptSocket, serializedSizePacket.c_str(), strlen(serializedSizePacket.c_str()), 0);
-		send(acceptSocket, serializedPacket.c_str(), strlen(serializedPacket.c_str()), 0);
+		send(it->getSocketOnServer(), serializedSizePacket.c_str(), strlen(serializedSizePacket.c_str()), 0);
+		send(it->getSocketOnServer(), serializedPacket.c_str(), strlen(serializedPacket.c_str()), 0);
 	}
 
 	else {
@@ -300,9 +300,8 @@ void Server::createChat(SOCKET acceptSocket, rcv::CreateChatPacket& packet) {
 
 		if (it_check_double == my_friends_vec.end()) {
 			std::vector<std::string>& friendsVecSender = it_me->getUserFriendsVec();
-			std::vector<std::string>& friendsVecReceiver = it_friend->getUserFriendsVec();
 			friendsVecSender.push_back(packet.getReceiverLogin());
-			friendsVecReceiver.push_back(packet.getSenderLogin());
+			
 
 			snd::ChatSuccessPacket pack;
 			rpl::UserInfoPacket userPack;
@@ -421,8 +420,24 @@ void Server::sendPacket(SOCKET acceptSocket, Packet& packet) {
 
 void Server::sendMessage(SOCKET acceptSocket, rpl::Message& message) {
 
+	auto it_me = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&message](User& user) {
+		return message.getReceiverInfo().getLogin() == user.getLogin();
+		});
+
+	auto& my_friends_vec = it_me->getUserFriendsVec();
+	auto it_check_double = std::find_if(my_friends_vec.begin(), my_friends_vec.end(), [&message](std::string& login) {
+		return message.getSenderInfo().getLogin() == login;
+		});
+
+	if (it_check_double == my_friends_vec.end()) {
+		std::vector<std::string>& friendsVecSender = it_me->getUserFriendsVec();
+		friendsVecSender.push_back(message.getSenderInfo().getLogin());
+	}
+	
+
+
 	auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&message](User& user) {
-		return user.getLogin() == message.getReceiverInfo().getLogin();
+		return user.getLogin() == message.getSenderInfo().getLogin();
 		});
 
 	if (it->getIsOnline()) {
@@ -431,8 +446,8 @@ void Server::sendMessage(SOCKET acceptSocket, rpl::Message& message) {
 		SizePacket sizePacket;
 		sizePacket.setData(serializedMessage);
 		std::string serializedSizePacket = sizePacket.serialize();
-		send(acceptSocket, serializedSizePacket.c_str(), strlen(serializedSizePacket.c_str()), 0);
-		send(acceptSocket, serializedMessage.c_str(), strlen(serializedMessage.c_str()), 0);
+		send(it->getSocketOnServer(), serializedSizePacket.c_str(), strlen(serializedSizePacket.c_str()), 0);
+		send(it->getSocketOnServer(), serializedMessage.c_str(), strlen(serializedMessage.c_str()), 0);
 	}
 
 	else {
