@@ -28,9 +28,6 @@ std::pair<Query, std::string> rcv::parseQuery(const std::string& query) {
         else if (firstLine == "MESSAGE") {
             queryType = Query::MESSAGE;
         }
-        else if (firstLine == "GET_ALL_FRIENDS_STATES") {
-            queryType = Query::GET_ALL_FRIENDS_STATES;
-        }
         else if (firstLine == "MESSAGES_READ_PACKET") {
             queryType = Query::MESSAGES_READ_PACKET;
         }
@@ -124,18 +121,6 @@ UpdateUserInfoPacket UpdateUserInfoPacket::deserialize(const std::string& str) {
     return pack;
 }
 
-GetFriendsStatusesPacket GetFriendsStatusesPacket::deserialize(const std::string& str) {
-    std::istringstream iss(str);
-    GetFriendsStatusesPacket  pack;
-
-    std::string loginStr;
-    while (iss >> loginStr) {
-        pack.m_vec_friends_logins.push_back(loginStr);
-    }
-
-    return pack;
-}
-
 using namespace rpl;
 std::string MessagesReadPacket::serialize() const {
     std::ostringstream oss;
@@ -169,17 +154,17 @@ MessagesReadPacket MessagesReadPacket::deserialize(const std::string& str) {
     return packet;
 }
 
-Message Message::deserialize(const std::string& str) {
+Message* Message::deserialize(const std::string& str) {
     std::istringstream iss(str);
-    Message message;
+    Message* message = new Message;
     std::string line;
 
     std::getline(iss, line);
     double id = 0;
     std::from_chars(line.data(), line.data() + line.size(), id);
-    message.m_id = id;
+    message->m_id = id;
 
-    std::getline(iss, message.m_timeStamp);
+    std::getline(iss, message->m_timeStamp);
 
     std::string msg;
     while (std::getline(iss, line)) {
@@ -189,7 +174,7 @@ Message Message::deserialize(const std::string& str) {
         msg += line + "\n";
 
     }
-    message.m_message = msg;
+    message->m_message = msg;
 
     std::ostringstream remainingStream1;
     std::ostringstream remainingStream2;
@@ -217,8 +202,8 @@ Message Message::deserialize(const std::string& str) {
 
 
     //swap buffers
-    message.setReceiverInfo(packSender);
-    message.setSenderInfo(packReceiver);
+    message->setReceiverInfo(packSender);
+    message->setSenderInfo(packReceiver);
 
     return message;
 }
@@ -312,10 +297,28 @@ std::string StatusPacket::serialize() {
     case Responce::USER_INFO_NOT_UPDATED:
         response = "USER_INFO_NOT_UPDATED";
         break;
+    case Responce::ALL_FRIENDS_STATES:
+        response = "ALL_FRIENDS_STATES";
+        break;
     }
     return response;
 }
 
+std::string MessagesIdsPacket::serialize() {
+    std::ostringstream oss;
+    oss << "MESSAGES_IDS_PACKET" << "\n";
+    std::size_t count = m_messagesIds.size();
+    oss << count << "\n";
+    for (auto p : m_messagesIds) {
+        oss << p.first << "\n";
+        for (auto mId : p.second) {
+            oss << mId << "\n";
+        }
+        oss << "|" << "\n";
+    }
+
+    return oss.str();
+}
 
 std::string FriendStatePacket::serialize() {
     std::ostringstream oss;

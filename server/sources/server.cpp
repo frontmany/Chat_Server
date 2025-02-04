@@ -85,11 +85,28 @@ void Server::onReceiving(SOCKET acceptSocket) {
 
 		if (byteCount > 0 && !isReceivingNextPacketSize) {
 			std::string bufferStr(buffer, bufferSize);
-			auto pair = rcv::parseQuery(bufferStr);
+			auto pair = rcv::parseQuery(bufferStr); 
 
 			if (pair.first == Query::AUTHORIZATION) {
+				snd::MultiPacket* pack = new snd::MultiPacket;
+
+				
 				rcv::AuthorizationPacket packet = rcv::AuthorizationPacket::deserialize(pair.second);
-				authorizeUser(acceptSocket, packet);
+				snd::StatusPacket* p1 = authorizeUser(acceptSocket, packet);
+				snd::FriendsStatusesPacket* p2 = dispatchAllFriendsStates(acceptSocket, packet.getLogin());
+				std::vector<rpl::Message*> v = dispatchPreviousMessages(acceptSocket, packet.getLogin());
+				snd::MessagesIdsPacket* p3 = dispatchPreviousMessagesReadIds(acceptSocket, packet.getLogin());
+
+				pack->addPacket(p1, "StatusPacket");
+				pack->addPacket(p2, "FriendsStatusesPacket");
+				pack->addPacket(p3, "MessagesIdsPacket");
+				for (auto message : v) {
+					pack->addPacket(message, "Message");
+				}
+				sendPacket(acceptSocket, *pack);
+
+				sendStatusToFriends(acceptSocket, true);
+				
 			}
 			else if (pair.first == Query::REGISTRATION) {
 				rcv::RegistrationPacket packet = rcv::RegistrationPacket::deserialize(pair.second);
@@ -108,12 +125,8 @@ void Server::onReceiving(SOCKET acceptSocket) {
 				updateUserInfo(acceptSocket, packet);
 			}
 			else if (pair.first == Query::MESSAGE) {
-				rpl::Message message = rpl::Message::deserialize(pair.second);
-				sendMessage(acceptSocket, message);
-			}
-			else if (pair.first == Query::GET_ALL_FRIENDS_STATES) {
-				rcv::GetFriendsStatusesPacket packet = rcv::GetFriendsStatusesPacket::deserialize(pair.second);
-				findUsersStatuses(acceptSocket, packet);
+				rpl::Message* message = rpl::Message::deserialize(pair.second);
+				redirectMessage(message);
 			}
 			else if (pair.first == Query::MESSAGES_READ_PACKET) {
 				rpl::MessagesReadPacket packet = rpl::MessagesReadPacket::deserialize(pair.second);
@@ -122,56 +135,39 @@ void Server::onReceiving(SOCKET acceptSocket) {
 
 			isReceivingNextPacketSize = true;
 			bufferSize = 40;
-			delete buffer;
+			delete[] buffer;
 		}
 
-		else {
+		else if (byteCount == SOCKET_ERROR) {
+			sendStatusToFriends(acceptSocket, false);
+			onDisconnect(acceptSocket);
+
 			int error = WSAGetLastError();
-			std::lock_guard<std::mutex> lock(m_mtx);
+			fprintf(stderr, "recv failed: %d\n", error);
 
-			auto it_me = std::find_if(m_vec_users.begin(), m_vec_users.end(),
-				[acceptSocket](const User& user) {
-					return user.getSocketOnServer() == acceptSocket;
-				});
-			it_me->setIsOnline(false);
-			it_me->setLastSeenToNow();
-			it_me->setSocketOnServer(-1);
+			delete[] buffer;
+			return;
+		}
 
-			isReceivingNextPacketSize = true;
-			delete buffer;
+		else if (byteCount == 0) {
+			sendStatusToFriends(acceptSocket, false);
+			onDisconnect(acceptSocket);
 
+			int error = WSAGetLastError();
 			if (error == WSAECONNRESET) {
 				printf("Client side connection shutdown.\n", error);
-				sendStatusToFriends(it_me, false);
 				return;
-				/*snd::FriendStatePacket packet;
-				packet.setIsOnline(false);
-				packet.setLastSeen(it_me->getLastSeen());
-
-				for (auto friendLogin : it_me->getUserFriendsVec()) {
-					auto itFriend = std::find_if(m_vec_users.begin(), m_vec_users.end(),
-						[&friendLogin](const User& user) {
-							return user.getLogin() == friendLogin;
-						});
-					if (itFriend->getIsOnline()) {
-						sendPacket(itFriend->getSocketOnServer(), packet);
-					}
-				}
-
-				break;
 			}
-			else {
-				fprintf(stderr, "recv failed: %d\n", error);
-				break;
-			}*/
-			}
+
+			delete[] buffer;
+			return;
 		}
-
-
 	}
 }
 
 void Server::sendMessagesReadIds(SOCKET acceptSocket, rpl::MessagesReadPacket& messagesReadPacket) {
+	std::lock_guard<std::mutex> lock(m_mtx);
+
 	auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&messagesReadPacket](User& user) {
 		return user.getLogin() == messagesReadPacket.getReceiverLogin();
 		});
@@ -186,42 +182,37 @@ void Server::sendMessagesReadIds(SOCKET acceptSocket, rpl::MessagesReadPacket& m
 		SizePacket sizePacket;
 		sizePacket.setData(serializedPacket);
 		std::string serializedSizePacket = sizePacket.serialize();
-		send(it->getSocketOnServer(), serializedSizePacket.c_str(), strlen(serializedSizePacket.c_str()), 0);
-		send(it->getSocketOnServer(), serializedPacket.c_str(), strlen(serializedPacket.c_str()), 0);
+		send(it->getSocketOnServer(), serializedSizePacket.c_str(), serializedSizePacket.size(), 0);
+		send(it->getSocketOnServer(), serializedPacket.c_str(), serializedPacket.size(), 0);
 	}
 
 	else {
-		auto itMessagesMap = m_map_read_messages_ids_to_send.find(messagesReadPacket.getReceiverLogin());
-		if (itMessagesMap == m_map_read_messages_ids_to_send.end()) {
-			m_map_read_messages_ids_to_send[messagesReadPacket.getReceiverLogin()] = messagesReadPacket.getReadMessagesVec();
-		}
-		
-		// shall newer happend
-		else {
-			std::vector<double>& messagesVec = m_map_read_messages_ids_to_send[messagesReadPacket.getReceiverLogin()];
-			std::vector<double>& msgVec = messagesReadPacket.getReadMessagesVec();
-			for (auto id : msgVec) {
-				messagesVec.push_back(id);
-			}
-		}
+		auto& vec = m_map_read_messages_ids_to_send[messagesReadPacket.getReceiverLogin()];
+		vec.push_back(std::make_pair(messagesReadPacket.getSenderLogin(), messagesReadPacket.getReadMessagesVec()));
 	}
 }
 
-void Server::findUsersStatuses(SOCKET acceptSocket, rcv::GetFriendsStatusesPacket& packet) {
-	std::vector<std::string>&  usersLoginsVec = packet.getFriendsLoginsVec();
+snd::FriendsStatusesPacket* Server::dispatchAllFriendsStates(SOCKET acceptSocket, const std::string& myLogin) {
+	auto it_me = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&myLogin](User& user) {
+		return user.getLogin() == myLogin;
+		});
 
-	snd::FriendsStatusesPacket pack;
-	for (auto login : usersLoginsVec) {
-		auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&login](User& user) {
-			return user.getLogin() == login;
+	std::vector<std::pair<std::string, std::string>> vec;
+	auto vecFriends = it_me->getUserFriendsVec();
+	for (auto f : vecFriends) {
+		auto it_friend = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&f](User& user) {
+			return user.getLogin() == f;
 			});
-		pack.getVecStatuses().push_back(std::make_pair(login, it->getLastSeen()));
+		vec.push_back(std::make_pair(it_friend->getLogin(), it_friend->getLastSeen()));
 	}
-	sendPacket(acceptSocket, pack);
+	snd::FriendsStatusesPacket* pack = new snd::FriendsStatusesPacket;
+	pack->getVecStatuses() = vec;
+	return pack;
 }
 
 void Server::updateUserInfo(SOCKET acceptSocket, rcv::UpdateUserInfoPacket& packet) {
 	std::lock_guard<std::mutex> lock(m_mtx);
+
 	auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&packet](User& user) {
 		return user.getLogin() == packet.getLogin();
 		});
@@ -245,6 +236,7 @@ void Server::updateUserInfo(SOCKET acceptSocket, rcv::UpdateUserInfoPacket& pack
 
 void Server::findUserInfo(SOCKET acceptSocket, rcv::GetUserInfoPacket& packet) {
 	std::lock_guard<std::mutex> lock(m_mtx);
+
 	auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&packet](User& user) {
 		return user.getLogin() == packet.getLogin();
 		});
@@ -269,6 +261,8 @@ void Server::findUserInfo(SOCKET acceptSocket, rcv::GetUserInfoPacket& packet) {
 }
 
 void Server::createChat(SOCKET acceptSocket, rcv::CreateChatPacket& packet) {
+	std::lock_guard<std::mutex> lock(m_mtx);
+
 	if (packet.getSenderLogin() == packet.getReceiverLogin()) {
 		snd::StatusPacket pack;
 		pack.setStatus(Responce::CHAT_CREATE_FAIL);
@@ -276,7 +270,6 @@ void Server::createChat(SOCKET acceptSocket, rcv::CreateChatPacket& packet) {
 		return;
 	}
 
-	std::lock_guard<std::mutex> lock(m_mtx);
 	auto it_friend = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&packet](User& user) {
 		return packet.getReceiverLogin() == user.getLogin();
 		});
@@ -326,6 +319,7 @@ void Server::createChat(SOCKET acceptSocket, rcv::CreateChatPacket& packet) {
 
 void Server::registerUser(SOCKET acceptSocket, rcv::RegistrationPacket& packet) {
 	std::lock_guard<std::mutex> lock(m_mtx);
+
 	auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&packet](User& user) {
 		return user.getLogin() == packet.getLogin();
 		});
@@ -348,33 +342,35 @@ void Server::registerUser(SOCKET acceptSocket, rcv::RegistrationPacket& packet) 
 	}
 }
 
-void Server::authorizeUser(SOCKET acceptSocket, rcv::AuthorizationPacket& packet) {
+snd::StatusPacket* Server::authorizeUser(SOCKET acceptSocket, rcv::AuthorizationPacket& packet) {
 	std::lock_guard<std::mutex> lock(m_mtx);
 
 	auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&packet](User& user) {
 		return ((user.getLogin() == packet.getLogin()) && (user.getPassword() == packet.getPassword()));
 		});
-
 	if (it != m_vec_users.end()) {
-		snd::StatusPacket statusPacket;
-		statusPacket.setStatus(Responce::AUTHORIZATION_SUCCESS);
-		sendPacket(acceptSocket, statusPacket);
+		snd::StatusPacket* statusPacket = new snd::StatusPacket;
+		statusPacket->setStatus(Responce::AUTHORIZATION_SUCCESS);
 		it->setIsOnline(true); 
 		it->setLastSeen("online");
 		it->setSocketOnServer(acceptSocket);
-		dispatchPreviousMessages(acceptSocket, packet);
-
-		sendStatusToFriends(it, true); // true means online
+		return statusPacket;
 	}
-
 	else {
-		snd::StatusPacket statusPacket;
-		statusPacket.setStatus(Responce::AUTHORIZATION_FAIL);
-		sendPacket(acceptSocket, statusPacket);
+		snd::StatusPacket* statusPacket = new snd::StatusPacket;
+		statusPacket->setStatus(Responce::AUTHORIZATION_FAIL);
+		return statusPacket;
 	}
 }
 
-void Server::sendStatusToFriends(std::vector<User>::iterator it_me, bool status) {
+void Server::sendStatusToFriends(SOCKET acceptSocket, bool status) {
+	std::lock_guard<std::mutex> lock(m_mtx);
+
+	auto it_me = std::find_if(m_vec_users.begin(), m_vec_users.end(),
+		[acceptSocket](const User& user) {
+			return user.getSocketOnServer() == acceptSocket;
+		});
+
 	std::vector<std::string> friendsLoginsVec = it_me->getUserFriendsVec();
 	for (auto friendLogin : friendsLoginsVec) {
 		auto itFriend = std::find_if(m_vec_users.begin(), m_vec_users.end(),
@@ -390,24 +386,25 @@ void Server::sendStatusToFriends(std::vector<User>::iterator it_me, bool status)
 				packet.setLastSeen("online");
 			}
 			else {
-				packet.setLastSeen(it_me->getLastSeen());
+				packet.setLastSeen(getCurrentTime());
 			}
 			sendPacket(itFriend->getSocketOnServer(), packet);
 		}
 	}
 }
 
-void Server::dispatchPreviousMessages(SOCKET acceptSocket, rcv::AuthorizationPacket& packet) {
-	std::vector<rpl::Message> messages_vec = m_map_messages_to_send[packet.getLogin()];
-	if (!messages_vec.empty()) {
-		for (auto msg : messages_vec) {
-			sendMessage(acceptSocket, msg);
-		}
-	}
-	else {
-		m_map_messages_to_send.erase(packet.getLogin());
-	}
+std::vector<rpl::Message*> Server::dispatchPreviousMessages(SOCKET acceptSocket, const std::string& myLogin) {
+	std::lock_guard<std::mutex> lock(m_mtx);
+	return m_map_messages_to_send[myLogin];
 }
+
+snd::MessagesIdsPacket* Server::dispatchPreviousMessagesReadIds(SOCKET acceptSocket, const std::string& myLogin) {
+	auto& readMessagesIdsVec = m_map_read_messages_ids_to_send[myLogin];
+	snd::MessagesIdsPacket* messagesIdsPack = new snd::MessagesIdsPacket;
+	messagesIdsPack->getMessagesIdsVec() = readMessagesIdsVec;
+	return messagesIdsPack;
+}
+
 
 void Server::sendPacket(SOCKET acceptSocket, Packet& packet) {
 	std::string serializedPacket =  packet.serialize();
@@ -418,48 +415,88 @@ void Server::sendPacket(SOCKET acceptSocket, Packet& packet) {
 	send(acceptSocket, serializedPacket.c_str(), serializedPacket.size(), 0);
 }
 
-void Server::sendMessage(SOCKET acceptSocket, rpl::Message& message) {
+void Server::redirectMessage(rpl::Message* message) {
+	std::lock_guard<std::mutex> lock(m_mtx);
 
 	auto it_me = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&message](User& user) {
-		return message.getReceiverInfo().getLogin() == user.getLogin();
+		return message->getReceiverInfo().getLogin() == user.getLogin();
 		});
+
 
 	auto& my_friends_vec = it_me->getUserFriendsVec();
 	auto it_check_double = std::find_if(my_friends_vec.begin(), my_friends_vec.end(), [&message](std::string& login) {
-		return message.getSenderInfo().getLogin() == login;
+		return message->getSenderInfo().getLogin() == login;
 		});
 
 	if (it_check_double == my_friends_vec.end()) {
 		std::vector<std::string>& friendsVecSender = it_me->getUserFriendsVec();
-		friendsVecSender.push_back(message.getSenderInfo().getLogin());
+		friendsVecSender.push_back(message->getSenderInfo().getLogin());
 	}
-	
 
+
+	auto it_friend = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&message](User& user) {
+		return message->getSenderInfo().getLogin() == user.getLogin();
+		});
+
+	auto& my_friends_vec2 = it_friend->getUserFriendsVec();
+	auto it_check_double2 = std::find_if(my_friends_vec2.begin(), my_friends_vec2.end(), [&message](std::string& login) {
+		return message->getReceiverInfo().getLogin() == login;
+		});
+
+	if (it_check_double2 == my_friends_vec2.end()) {
+		std::vector<std::string>& friendsVecSender2 = it_friend->getUserFriendsVec();
+		friendsVecSender2.push_back(message->getReceiverInfo().getLogin());
+	}
 
 	auto it = std::find_if(m_vec_users.begin(), m_vec_users.end(), [&message](User& user) {
-		return user.getLogin() == message.getSenderInfo().getLogin();
+		return user.getLogin() == message->getSenderInfo().getLogin();
 		});
 
 	if (it->getIsOnline()) {
 		
-		std::string serializedMessage = message.serialize();
+		std::string serializedMessage = message->serialize();
 		SizePacket sizePacket;
 		sizePacket.setData(serializedMessage);
 		std::string serializedSizePacket = sizePacket.serialize();
-		send(it->getSocketOnServer(), serializedSizePacket.c_str(), strlen(serializedSizePacket.c_str()), 0);
-		send(it->getSocketOnServer(), serializedMessage.c_str(), strlen(serializedMessage.c_str()), 0);
+		send(it->getSocketOnServer(), serializedSizePacket.c_str(), serializedSizePacket.size(), 0);
+		send(it->getSocketOnServer(), serializedMessage.c_str(), serializedMessage.size(), 0);
 	}
 
 	else {
-		auto itMessagesMap = m_map_messages_to_send.find(message.getReceiverInfo().getLogin());
+		auto itMessagesMap = m_map_messages_to_send.find(message->getSenderInfo().getLogin());
 		if (itMessagesMap == m_map_messages_to_send.end()) {
-			std::vector<rpl::Message> messagesVec;
+			std::vector<rpl::Message*> messagesVec;
 			messagesVec.push_back(message);
-			m_map_messages_to_send[message.getReceiverInfo().getLogin()] = messagesVec;
+			m_map_messages_to_send[message->getSenderInfo().getLogin()] = messagesVec;
 		}
 		else {
-			std::vector<rpl::Message>& messagesVec = m_map_messages_to_send[message.getReceiverInfo().getLogin()];
+			std::vector<rpl::Message*>& messagesVec = m_map_messages_to_send[message->getReceiverInfo().getLogin()];
 			messagesVec.push_back(message);
 		}
 	}
+
+}
+
+void Server::onDisconnect(SOCKET acceptSocket) {
+	std::lock_guard<std::mutex> lock(m_mtx);
+
+	auto it_me = std::find_if(m_vec_users.begin(), m_vec_users.end(),
+		[acceptSocket](const User& user) {
+			return user.getSocketOnServer() == acceptSocket;
+		});
+
+	it_me->setIsOnline(false);
+	it_me->setLastSeenToNow();
+	it_me->setSocketOnServer(-1);
+}
+
+std::string getCurrentTime() {
+	auto now = std::chrono::system_clock::now();
+
+	std::time_t now_time_t = std::chrono::system_clock::to_time_t(now);
+
+	std::ostringstream oss;
+	oss << std::put_time(std::localtime(&now_time_t), "%H:%M:%S");
+
+	return "last seen " + oss.str(); // например "last seen 14:30:00"
 }

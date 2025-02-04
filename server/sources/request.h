@@ -1,6 +1,7 @@
 #pragma once
 
 #include<string>
+#include<queue>
 #include<sstream>
 
 #include "photo.h"
@@ -8,7 +9,7 @@
 class Packet {
 public:
     virtual ~Packet() = default;
-    virtual std::string serialize() { return ""; };
+    virtual std::string serialize() const { return ""; };
 };
 
 
@@ -32,7 +33,6 @@ enum class Query {
     GET_USER_INFO,
     UPDATE_USER_INFO,
     MESSAGE,
-    GET_ALL_FRIENDS_STATES
 
 };
 
@@ -91,11 +91,11 @@ namespace rpl {
 
     };
 
-    class Message {
+    class Message : public Packet {
     public:
         Message() {}
         std::string serialize();
-        static Message deserialize(const std::string& str);
+        static Message* deserialize(const std::string& str);
 
         const rpl::UserInfoPacket& getReceiverInfo() const { return m_receiver_info; }
         void setReceiverInfo(rpl::UserInfoPacket& info) { m_receiver_info = info; }
@@ -217,18 +217,6 @@ namespace rcv {
         Photo       m_user_photo;
     };
 
-    class GetFriendsStatusesPacket {
-    public:
-        GetFriendsStatusesPacket() {}
-        static GetFriendsStatusesPacket deserialize(const std::string& str);
-
-        std::vector<std::string>& getFriendsLoginsVec() { return m_vec_friends_logins; }
-        void setFriendsLoginsVec(const std::vector<std::string>& friendsLoginsVec) { m_vec_friends_logins = friendsLoginsVec; }
-
-    private:
-        std::vector<std::string> m_vec_friends_logins;
-    };
-
 }
 
 
@@ -248,9 +236,52 @@ enum class Responce {
     USER_INFO_NOT_UPDATED,
     FRIEND_STATE_CHANGED,
     ALL_FRIENDS_STATES,
+    MESSAGES_IDS_PACKET
 };
 
 namespace snd {
+    class MultiPacket : public Packet {
+    public:
+        void addPacket(Packet* packet, const std::string& packetName) {
+            m_packets.push_back(packet);
+            m_packetNamesOrder.push(packetName);
+            m_bytesCountForPacket.push(m_packets.back()->serialize().size());
+        }
+
+        std::string serialize() const override {
+            std::ostringstream oss;
+            oss << "MultiPacket" << "\n";
+
+
+            auto namesQueue = m_packetNamesOrder;
+            while (!namesQueue.empty()) {
+                oss << namesQueue.front() << (namesQueue.size() > 1 ? ", " : "");
+                namesQueue.pop();
+            }
+            oss << "\n";
+
+            auto bytesQueue = m_bytesCountForPacket;
+            while (!bytesQueue.empty()) {
+                oss << bytesQueue.front() << (bytesQueue.size() > 1 ? ", " : "");
+                bytesQueue.pop();
+            }
+            oss << "\n";
+
+            for (const auto& packet : m_packets) {
+                oss << packet->serialize() << "\n";
+            }
+            return oss.str();
+        }
+
+    private:
+        std::vector<Packet*> m_packets;
+        std::queue<std::string> m_packetNamesOrder;
+        std::queue<int> m_bytesCountForPacket;
+    };
+
+
+
+
     class StatusPacket : public Packet {
     public:
         StatusPacket() : m_status(Responce::EMPTY_RESPONSE) {}
@@ -293,6 +324,17 @@ namespace snd {
 
     private:
         rpl::UserInfoPacket m_packet;
+    };
+
+    class MessagesIdsPacket : public Packet {
+    public:
+        MessagesIdsPacket() {}
+        std::string serialize();
+
+        std::vector<std::pair<std::string, std::vector<double>>>& getMessagesIdsVec() { return m_messagesIds; }
+
+    private:
+        std::vector<std::pair<std::string, std::vector<double>>> m_messagesIds;
     };
 
     class FriendsStatusesPacket : public Packet {
